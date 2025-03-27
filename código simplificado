@@ -1,0 +1,62 @@
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include <HTTPClient.h>
+#include <Update.h>
+
+const char* ssid = "seu_ssid";
+const char* password = "seu_password";
+const char* mqtt_server = "broker.hivemq.com";
+const int mqtt_port = 1883;
+const char* mqtt_topic = "firmware_git";
+const char* firmware_base_url = "https://raw.githubusercontent.com/PedroKutski/ESP_OTA_MQTT/main/";
+const int ledPin = 2;
+
+WiFiClientSecure clientSecure;
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(ledPin, OUTPUT);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  Serial.println("\nWi-Fi connected. IP: " + WiFi.localIP().toString());
+  mqttClient.setServer(mqtt_server, mqtt_port);
+  mqttClient.setCallback([](char* topic, byte* payload, unsigned int length) {
+    String message = String((char*)payload, length);
+    Serial.println("Message [" + String(topic) + "]: " + message);
+    if (String(topic) == mqtt_topic) downloadFirmware(message);
+  });
+}
+
+void loop() {
+  if (!mqttClient.connected()) {
+    mqttClient.connect(("ESP32Client_" + String(random(0xffff), HEX)).c_str());
+    mqttClient.subscribe(mqtt_topic);
+  }
+  mqttClient.loop();
+}
+
+void downloadFirmware(const String& filename) {
+  clientSecure.setInsecure();
+  HTTPClient http;
+  http.begin(clientSecure, firmware_base_url + filename);
+  http.addHeader("User-Agent", "ESP32Updater/1.0");
+  
+  int httpCode = http.GET();
+  if (httpCode == HTTP_CODE_OK) {
+    int contentLength = http.getSize();
+    if (contentLength > 0 && Update.begin(contentLength)) {
+      WiFiClient* stream = http.getStreamPtr();
+      size_t written = Update.writeStream(*stream);
+      if (written == contentLength && Update.end()) {
+        Serial.println("Update complete. Restarting...");
+        ESP.restart();
+      } else {
+        Serial.println("Update failed");
+      }
+    }
+  }
+  http.end();
+}
